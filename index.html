@@ -328,6 +328,8 @@ service cloud.firestore {
             getAuth, 
             GoogleAuthProvider, 
             signInWithPopup, 
+            signInWithRedirect,
+            getRedirectResult,
             signOut, 
             onAuthStateChanged 
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -364,6 +366,15 @@ service cloud.firestore {
         }
 
         const provider = new GoogleAuthProvider();
+
+        // Handle login result when redirected back to the page (COOP Fallback support)
+        getRedirectResult(auth).then((result) => {
+            if (result && result.user) {
+                showToast("Googleログインしました！", "success");
+            }
+        }).catch((error) => {
+            console.error("リダイレクトログインエラー:", error);
+        });
 
         // Application State Variables
         let currentUser = null;
@@ -412,18 +423,25 @@ service cloud.firestore {
             }
         });
 
-        // Google Sign-In Function
+        // Google Sign-In Function with automatic fallback for COOP / Popup block issues
         async function handleLogin() {
             try {
                 await signInWithPopup(auth, provider);
                 showToast("Googleログインしました！", "success");
             } catch (error) {
-                console.error("ログインエラー:", error);
+                console.warn("ポップアップでのログインが制限されたため、リダイレクト方式を試行します:", error);
+                
                 if (error.code === 'auth/unauthorized-domain') {
                     showToast("Firebase管理画面でGitHubドメインの設定が必要です（右下のガイド参照）", "error");
                     document.getElementById("guide-modal").classList.remove("hidden");
                 } else {
-                    showToast("ログインに失敗しました: " + error.message, "error");
+                    // COOPやポップアップブロック等の場合は画面リダイレクト方式へ自動切替
+                    try {
+                        await signInWithRedirect(auth, provider);
+                    } catch (redirectError) {
+                        console.error("リダイレクトログイン失敗:", redirectError);
+                        showToast("ログインに失敗しました: " + redirectError.message, "error");
+                    }
                 }
             }
         }
@@ -524,7 +542,6 @@ service cloud.firestore {
         // Realtime Firestore Listener
         function subscribePosts() {
             try {
-                // Read all data from 'feedback' collection
                 const feedbackRef = collection(db, "feedback");
                 
                 onSnapshot(feedbackRef, (snapshot) => {
@@ -575,12 +592,10 @@ service cloud.firestore {
 
         // Render Cards
         function renderPosts() {
-            // Filter
             const filteredPosts = activeCategoryFilter === "ALL" 
                 ? allPosts 
                 : allPosts.filter(p => p.category === activeCategoryFilter);
 
-            // Clean previous cards except skeleton/empty indicators
             const cardElements = postsContainer.querySelectorAll(".post-card");
             cardElements.forEach(el => el.remove());
 
@@ -595,7 +610,6 @@ service cloud.firestore {
                 const card = document.createElement("div");
                 card.className = "post-card bg-white rounded-2xl p-5 shadow-sm border border-gray-200 space-y-3 transition hover:shadow-md";
 
-                // Date formatting
                 let dateStr = "たった今";
                 if (post.createdAt) {
                     const dateObj = post.createdAt.toDate ? post.createdAt.toDate() : new Date();
@@ -604,7 +618,6 @@ service cloud.firestore {
                     });
                 }
 
-                // Rating Stars HTML
                 let starsHtml = "";
                 for (let i = 1; i <= 5; i++) {
                     starsHtml += i <= (post.rating || 5) 
@@ -612,10 +625,8 @@ service cloud.firestore {
                         : `<i class="fa-regular fa-star text-gray-300"></i>`;
                 }
 
-                // Avatar fallback
                 const avatarUrl = post.userPhoto || 'https://placehold.co/80x80/16a34a/ffffff?text=' + encodeURIComponent((post.userName || '客').charAt(0));
 
-                // Check if current user liked this post
                 const isLiked = currentUser && post.likedUsers && post.likedUsers.includes(currentUser.uid);
 
                 card.innerHTML = `
@@ -646,7 +657,6 @@ service cloud.firestore {
                     </div>
                 `;
 
-                // Add Like Event Listener
                 const likeBtn = card.querySelector(".btn-like");
                 likeBtn.addEventListener("click", () => handleLikePost(post.id, post.likedUsers || []));
 
